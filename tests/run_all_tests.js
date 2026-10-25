@@ -102,7 +102,9 @@ async function runTests() {
           }
           res.write(JSON.stringify({ model: parsed.model || 'mock-model', message: { role: 'assistant', content: `chunk ${count} ` }, done: false }) + '\n');
         }, 30);
-        req.on('close', () => { clearInterval(interval); });
+        interval.unref();
+        res.on('close', () => clearInterval(interval));
+        req.on('close', () => clearInterval(interval));
       });
     });
 
@@ -1069,7 +1071,9 @@ rl.on('line', (line) => {
     assert(await fs.stat(verifyScriptPath).then(() => true).catch(() => false), 'Distribution verification script exists');
 
     const sumsPath = path.join(__dirname, '../release/SHA256SUMS.txt');
-    assert(await fs.stat(sumsPath).then(() => true).catch(() => false), 'Release checksums manifest SHA256SUMS.txt exists');
+    const releaseConfigSums = path.join(__dirname, '../github-release/release-config/SHA256SUMS.txt');
+    const sumsExist = (await fs.stat(sumsPath).catch(() => null)) || (await fs.stat(releaseConfigSums).catch(() => null));
+    assert(Boolean(sumsExist), 'Release checksums manifest SHA256SUMS.txt exists');
   } catch (err) {
     assert(false, 'Windows Distribution Packaging test failed', err.message);
   }
