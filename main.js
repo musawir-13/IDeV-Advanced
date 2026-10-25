@@ -706,6 +706,7 @@ app.whenReady().then(async () => {
   geminiLiveSession.on('transcript-partial', (data) => safeSend('s2s:transcript', data));
   geminiLiveSession.on('turn-complete', (info) => safeSend('s2s:turn-complete', info));
   geminiLiveSession.on('interrupted', (info) => safeSend('s2s:interrupted', info));
+  geminiLiveSession.on('reconnecting', (info) => safeSend('s2s:reconnecting', info));
   geminiLiveSession.on('closed', (info) => safeSend('s2s:closed', info));
   geminiLiveSession.on('error', (err) => safeSend('s2s:error', { message: err?.message || String(err) }));
 

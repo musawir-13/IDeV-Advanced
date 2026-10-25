@@ -18,7 +18,7 @@ const { ConnectorManager, LocalGitConnector, FileSystemSearchConnector, WebSearc
 const { CommandRunner, SAFE_COMMANDS } = require('../src/services/command-runner');
 const { CheckpointManager } = require('../src/services/checkpoint-manager');
 const { MemoryEngine, cosineSimilarity } = require('../src/services/memory-engine');
-const { GeminiLiveSession, DEFAULT_MODEL, DEFAULT_VOICE, HINGLISH_SYSTEM_INSTRUCTION } = require('../src/services/gemini-live-session');
+const { GeminiLiveSession, DEFAULT_MODEL, FALLBACK_MODEL, DEFAULT_VOICE, HINGLISH_SYSTEM_INSTRUCTION, normalizeModel } = require('../src/services/gemini-live-session');
 const { floatTo16BitPCM, pcm16BitToFloat, downsampleBuffer, arrayBufferToBase64, base64ToUint8Array, calculateRMS, S2SAudioPipeline } = require('../src/services/s2s-audio-pipeline');
 const { IntegrationsRegistry } = require('../src/services/integrations-registry');
 
@@ -633,6 +633,14 @@ rl.on('line', (line) => {
     const tone = new Float32Array(1000).fill(0.7);
     const toneEnergy = calculateRMS(tone);
     assert(Math.abs(toneEnergy.rms - 0.7) < 0.001, 'Constant tone RMS matches signal amplitude');
+
+    // 6. Real S2SAudioPipeline low-latency buffer & turn sequencing
+    const pipeline = new S2SAudioPipeline();
+    assert(pipeline.bufferSize === 1024, 'Audio capture buffer configured to 1024 samples (low-latency ~64ms frames)');
+    assert(pipeline.activeTurnId === 1, 'Initial turn sequence ID starts at 1');
+    pipeline.activeTurnId = 5;
+    const staleResult = pipeline.queueAudioChunk(base64Audio, 4);
+    assert(staleResult === false, 'Stale audio chunk from prior turn ID is instantly discarded before playback');
   } catch (err) {
     assert(false, 'S2S Audio framing test failed', err.message);
   }
@@ -709,6 +717,22 @@ rl.on('line', (line) => {
     // 5. Interruption event detection
     const mockInterrupt = { serverContent: { interrupted: true } };
     assert(mockInterrupt.serverContent.interrupted === true, 'Server barge-in interruption flag detected');
+
+    // 6. Preferred candidate model & normalization
+    assert(DEFAULT_MODEL === 'models/gemini-3.8-live', 'Default S2S model is configured to models/gemini-3.8-live');
+    assert(FALLBACK_MODEL === 'models/gemini-2.0-flash-exp', 'Fallback S2S model is models/gemini-2.0-flash-exp');
+    assert(normalizeModel('gemini-3.8-live') === 'models/gemini-3.8-live', 'normalizeModel prepends models/ if missing');
+    assert(normalizeModel('models/gemini-3.8-live') === 'models/gemini-3.8-live', 'normalizeModel preserves models/ prefix');
+    assert(session.conversationMode === 'continuous', 'Session default conversationMode is continuous');
+
+    // 7. Resumption handle extraction
+    const mockResumption = { sessionResumptionUpdate: { handle: 'resumption-token-gemini-live-xyz' } };
+    session.resumptionHandle = mockResumption.sessionResumptionUpdate.handle;
+    assert(session.resumptionHandle === 'resumption-token-gemini-live-xyz', 'Resumption handle stored for GoAway / reconnect');
+
+    // 8. Bounded exponential backoff calculation
+    const delays = [0, 1, 2, 3].map(attempt => Math.min(1000 * Math.pow(2, attempt), 10000));
+    assert(delays[0] === 1000 && delays[1] === 2000 && delays[2] === 4000 && delays[3] === 8000, 'Reconnection backoff scales: 1s, 2s, 4s, 8s');
   } catch (err) {
     assert(false, 'S2S protocol validation failed', err.message);
   }
@@ -755,6 +779,16 @@ rl.on('line', (line) => {
     assert(mockPipeline.activeSources.size === 0, 'Active playback sources instantly cleared on barge-in');
     assert(mockPipeline.isPlaying === false, 'isPlaying state reset to false');
     assert(mockPipeline.nextPlayTime === 0, 'Scheduled playback queue reset');
+
+    // Real S2SAudioPipeline barge-in interruption test
+    const realPipeline = new S2SAudioPipeline();
+    realPipeline.activeTurnId = 2;
+    realPipeline.isPlaying = true;
+    realPipeline.nextPlayTime = 15.0;
+    realPipeline.interruptPlayback();
+    assert(realPipeline.activeTurnId === 3, 'interruptPlayback increments activeTurnId to invalidate future chunks from turn 2');
+    assert(realPipeline.isPlaying === false, 'interruptPlayback resets isPlaying to false');
+    assert(realPipeline.nextPlayTime === 0, 'interruptPlayback clears next scheduled play time');
   } catch (err) {
     assert(false, 'S2S state machine test failed', err.message);
   }

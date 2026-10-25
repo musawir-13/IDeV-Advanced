@@ -127,6 +127,11 @@ contextBridge.exposeInMainWorld('nexus', {
       ipcRenderer.on('s2s:state-change', listener);
       return () => ipcRenderer.removeListener('s2s:state-change', listener);
     },
+    onReconnecting: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('s2s:reconnecting', listener);
+      return () => ipcRenderer.removeListener('s2s:reconnecting', listener);
+    },
     onClosed: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on('s2s:closed', listener);

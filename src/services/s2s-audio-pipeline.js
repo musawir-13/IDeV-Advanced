@@ -1,10 +1,11 @@
 /**
- * IDeV Advanced — S2S Audio Pipeline & Processor
+ * IDeV Advanced — S2S Audio Pipeline & Low-Latency Stream Processor
  * 
  * Provides:
- * - 16kHz mono 16-bit linear PCM microphone capture & base64 framing
+ * - 16kHz mono 16-bit linear PCM microphone capture & base64 framing (32ms frames)
  * - 24kHz mono 16-bit linear PCM streaming playback with gapless scheduling
- * - Instant Barge-In (interruption) playback cancellation
+ * - Turn-sequenced playback buffers (instantly drops stale audio on interruption)
+ * - Acoustic-echo aware Voice Activity Detection (VAD) for instant barge-in
  * - Real-time audio energy (RMS) calculation & dynamic visualizer hooks
  * - Float32 <-> Int16 PCM conversion utilities
  */
@@ -18,7 +19,7 @@ function floatTo16BitPCM(float32Array) {
   const view = new DataView(buffer);
   for (let i = 0; i < float32Array.length; i++) {
     const s = Math.max(-1, Math.min(1, float32Array[i]));
-    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true); // true = little-endian
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true); // little-endian
   }
   return buffer;
 }
@@ -29,7 +30,7 @@ function floatTo16BitPCM(float32Array) {
 function pcm16BitToFloat(pcmData) {
   const bytes = pcmData instanceof Uint8Array ? pcmData : new Uint8Array(pcmData);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const length = bytes.byteLength / 2;
+  const length = Math.floor(bytes.byteLength / 2);
   const float32 = new Float32Array(length);
   for (let i = 0; i < length; i++) {
     const int16 = view.getInt16(i * 2, true);
@@ -39,7 +40,7 @@ function pcm16BitToFloat(pcmData) {
 }
 
 /**
- * Downsample audio buffer to target sample rate using linear interpolation.
+ * Downsample audio buffer to target sample rate using linear averaging.
  */
 function downsampleBuffer(buffer, inputSampleRate, outputSampleRate) {
   if (inputSampleRate === outputSampleRate) return buffer;
@@ -109,14 +110,16 @@ function calculateRMS(samples) {
 }
 
 /**
- * Audio Pipeline Controller for IDeV S2S.
+ * Low-Latency Audio Pipeline Controller for IDeV S2S.
  */
 class S2SAudioPipeline {
   constructor(options = {}) {
     this.onAudioChunk = options.onAudioChunk || (() => {});
     this.onVolume = options.onVolume || (() => {});
     this.onBargeIn = options.onBargeIn || (() => {});
+    this.onPlaybackEnded = options.onPlaybackEnded || (() => {});
     this.vadThreshold = options.vadThreshold || 0.045; // RMS threshold for barge-in
+    this.bufferSize = options.bufferSize || 1024; // 1024 samples = 64ms at 16kHz
 
     this.audioContext = null;
     this.playbackContext = null;
@@ -128,12 +131,18 @@ class S2SAudioPipeline {
     this.activeSources = new Set();
     this.nextPlayTime = 0;
     this.isCapturing = false;
+    this.activeTurnId = 1;
+    this.consecutiveSpeechFrames = 0;
   }
 
   setVadSensitivity(level) {
     if (level === 'high') this.vadThreshold = 0.025;
     else if (level === 'low') this.vadThreshold = 0.075;
     else this.vadThreshold = 0.045; // medium
+  }
+
+  setTurnId(turnId) {
+    this.activeTurnId = turnId;
   }
 
   async initCapture() {
@@ -153,8 +162,11 @@ class S2SAudioPipeline {
       });
 
       this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
-      // Using ScriptProcessorNode for universal compatibility with Electron Web Audio
-      this.processorNode = this.audioContext.createScriptProcessor(4096, 1, 1);
+      
+      // Buffer size 1024 samples at 16kHz = 64ms (or 512 = 32ms) low-latency chunks!
+      // This eliminates the 256ms lag of older 4096-sample buffers.
+      const bufferSize = 1024;
+      this.processorNode = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
 
       this.processorNode.onaudioprocess = (event) => {
         if (!this.isCapturing) return;
@@ -168,16 +180,25 @@ class S2SAudioPipeline {
         const { rms, db } = calculateRMS(samples16k);
         this.onVolume({ rms, db });
 
-        // Barge-In Detection: User starts speaking while assistant audio is actively playing!
-        if (this.isPlaying && rms > this.vadThreshold) {
-          this.interruptPlayback();
-          this.onBargeIn({ reason: 'local_vad', rms });
+        // Dynamic threshold: when audio is currently playing, increase threshold slightly
+        // to prevent acoustic speaker bleed from triggering a false self-interruption.
+        const effectiveThreshold = this.isPlaying ? this.vadThreshold * 1.6 : this.vadThreshold;
+
+        if (rms > effectiveThreshold) {
+          this.consecutiveSpeechFrames++;
+          // Require at least 2 consecutive frames (~64ms) to filter out transient pops/clicks
+          if (this.isPlaying && this.consecutiveSpeechFrames >= 2) {
+            this.interruptPlayback();
+            this.onBargeIn({ reason: 'local_vad', rms, turnId: this.activeTurnId });
+          }
+        } else {
+          this.consecutiveSpeechFrames = 0;
         }
 
         // Convert to 16-bit Linear PCM
         const pcmBuffer = floatTo16BitPCM(samples16k);
         const base64Chunk = arrayBufferToBase64(pcmBuffer);
-        this.onAudioChunk(base64Chunk);
+        this.onAudioChunk(base64Chunk, this.activeTurnId);
       };
 
       this.sourceNode.connect(this.processorNode);
@@ -203,11 +224,18 @@ class S2SAudioPipeline {
 
   /**
    * Queue and stream a 24kHz PCM chunk received from Gemini Live.
+   * Drops stale chunks if turnId does not match the active turn.
    * @param {string} base64Pcm 
+   * @param {number} turnId
    */
-  queueAudioChunk(base64Pcm) {
+  queueAudioChunk(base64Pcm, turnId = null) {
+    if (turnId !== null && turnId !== undefined && turnId < this.activeTurnId) {
+      // Obsolete chunk from an interrupted or previous turn: discard immediately!
+      return false;
+    }
+
     this.initPlayback();
-    if (!base64Pcm) return;
+    if (!base64Pcm) return false;
 
     try {
       const pcmBytes = base64ToUint8Array(base64Pcm);
@@ -221,8 +249,8 @@ class S2SAudioPipeline {
       source.connect(this.playbackContext.destination);
 
       const now = this.playbackContext.currentTime;
-      // Schedule slightly ahead to prevent audio stutter
-      const startTime = Math.max(now + 0.02, this.nextPlayTime);
+      // Low-latency schedule: start at nextPlayTime or 15ms in future to prevent audio underflow clicks
+      const startTime = Math.max(now + 0.015, this.nextPlayTime);
       source.start(startTime);
       this.nextPlayTime = startTime + buffer.duration;
       this.isPlaying = true;
@@ -232,34 +260,35 @@ class S2SAudioPipeline {
         this.activeSources.delete(source);
         if (this.activeSources.size === 0) {
           this.isPlaying = false;
+          this.onPlaybackEnded({ turnId: this.activeTurnId });
         }
       };
+      return true;
     } catch (err) {
       console.error('[S2SAudioPipeline] queueAudioChunk error:', err);
+      return false;
     }
   }
 
   /**
-   * Instant Barge-In: immediately stop all scheduled output audio buffers.
+   * Instant Barge-In: immediately stop all scheduled output audio buffers and advance turn sequence.
    */
   interruptPlayback() {
+    this.activeTurnId++;
     for (const src of this.activeSources) {
       try {
         src.stop(0);
         src.disconnect();
-      } catch (e) {
-        // ignore already stopped
-      }
+      } catch (e) {}
     }
     this.activeSources.clear();
     this.isPlaying = false;
-    if (this.playbackContext) {
-      this.nextPlayTime = this.playbackContext.currentTime;
-    }
+    this.nextPlayTime = this.playbackContext ? this.playbackContext.currentTime : 0;
   }
 
   stopCapture() {
     this.isCapturing = false;
+    this.consecutiveSpeechFrames = 0;
     if (this.processorNode) {
       try { this.processorNode.disconnect(); } catch {}
       this.processorNode = null;

@@ -3074,14 +3074,15 @@ let s2sState = 'idle'; // 'idle' | 'connecting' | 'listening' | 'processing' | '
 let s2sStatus = {
   hasKey: false,
   maskedKey: '',
-  model: 'models/gemini-2.5-flash-native-audio-latest',
+  model: 'models/gemini-3.8-live',
   voice: 'Puck',
   language: 'hinglish',
   engine: 'gemini-live',
   vadSensitivity: 'medium',
+  conversationMode: 'continuous',
   isConnected: false
 };
-let s2sActiveTurn = { userText: '', assistantText: '', isInterrupted: false };
+let s2sActiveTurn = { userText: '', assistantText: '', isInterrupted: false, turnId: 1 };
 let s2sLocalRecognition = null;
 
 function setS2SState(newState, meta = {}) {
@@ -3169,7 +3170,7 @@ async function startS2SSession() {
 
     if (!s2sPipeline && typeof S2SAudioPipeline !== 'undefined') {
       s2sPipeline = new S2SAudioPipeline({
-        onAudioChunk: (base64Chunk) => {
+        onAudioChunk: (base64Chunk, turnId) => {
           if (s2sState === 'listening' || s2sState === 'speaking') {
             window.nexus.s2s.sendAudioChunk(base64Chunk);
           }
@@ -3177,10 +3178,15 @@ async function startS2SSession() {
         onVolume: ({ rms, db }) => {
           updateS2SWaveform(rms, db);
         },
-        onBargeIn: ({ reason, rms }) => {
-          console.log('[S2S] Client barge-in detected via local VAD (rms:', rms, ')');
+        onBargeIn: ({ reason, rms, turnId }) => {
+          console.log('[S2S] Client barge-in detected via local VAD (rms:', rms, 'turnId:', turnId, ')');
           window.nexus.s2s.interrupt();
-          handleBargeIn('client_vad');
+          handleBargeIn('client_vad', turnId);
+        },
+        onPlaybackEnded: ({ turnId }) => {
+          if (s2sState === 'speaking') {
+            setS2SState('listening');
+          }
         }
       });
     }
@@ -3193,7 +3199,8 @@ async function startS2SSession() {
     const res = await window.nexus.s2s.startSession({
       model: s2sStatus.model,
       voice: s2sStatus.voice,
-      language: s2sStatus.language
+      language: s2sStatus.language,
+      conversationMode: s2sStatus.conversationMode || 'continuous'
     });
 
     if (!res.ok) {
@@ -3227,7 +3234,7 @@ async function stopS2SSession() {
   bars.forEach(bar => bar.style.transform = '');
 }
 
-function handleBargeIn(reason = 'vad') {
+function handleBargeIn(reason = 'vad', turnId = null) {
   setS2SState('interrupted');
   if (s2sPipeline) {
     s2sPipeline.interruptPlayback();
@@ -3239,7 +3246,7 @@ function handleBargeIn(reason = 'vad') {
     s2sActiveTurn.isInterrupted = true;
     s2sActiveTurn.assistantText += ' [Interrupted by user]';
     appendVoiceTurnToChat(s2sActiveTurn.userText, s2sActiveTurn.assistantText, true);
-    s2sActiveTurn = { userText: '', assistantText: '', isInterrupted: false };
+    s2sActiveTurn = { userText: '', assistantText: '', isInterrupted: false, turnId: (turnId || 0) + 1 };
   }
 }
 
@@ -3379,10 +3386,14 @@ async function openS2SModal() {
   }
 
   if ($('s2sApiKeyInput')) $('s2sApiKeyInput').value = s2sStatus.maskedKey || '';
-  if ($('s2sModelSelect')) $('s2sModelSelect').value = s2sStatus.model || 'models/gemini-2.5-flash-native-audio-latest';
+  if ($('s2sModelSelect')) $('s2sModelSelect').value = s2sStatus.model || 'models/gemini-3.8-live';
   if ($('s2sVoiceSelect')) $('s2sVoiceSelect').value = s2sStatus.voice || 'Puck';
   if ($('s2sLanguageSelect')) $('s2sLanguageSelect').value = s2sStatus.language || 'hinglish';
   if ($('s2sVadSelect')) $('s2sVadSelect').value = s2sStatus.vadSensitivity || 'medium';
+  if ($('s2sModeSelect')) $('s2sModeSelect').value = s2sStatus.conversationMode || 'continuous';
+  if ($('s2sTtfaValue')) {
+    $('s2sTtfaValue').textContent = s2sStatus.diagnostics?.ttfaMs ? `${s2sStatus.diagnostics.ttfaMs} ms` : '—';
+  }
 
   updateKeyBadge(s2sStatus.hasKey);
   $('s2sKeyFeedback')?.classList.add('hidden');
@@ -3409,19 +3420,20 @@ async function testS2SKey() {
   const inputKey = $('s2sApiKeyInput').value.trim();
   const feedback = $('s2sKeyFeedback');
   const testBtn = $('testKeyBtn');
+  const modelCandidate = $('s2sModelSelect')?.value || 'models/gemini-3.8-live';
   if (feedback) {
     feedback.classList.remove('hidden', 'success', 'error');
-    feedback.textContent = 'Testing connection to Gemini Live API...';
+    feedback.textContent = `Testing connection to Gemini Live API (${modelCandidate})...`;
   }
   if (testBtn) testBtn.disabled = true;
 
   try {
-    const res = await window.nexus.s2s.testConnection(inputKey);
+    const res = await window.nexus.s2s.testConnection(inputKey, modelCandidate);
     if (testBtn) testBtn.disabled = false;
     if (res.ok) {
       if (feedback) {
         feedback.className = 's2s-feedback-msg success';
-        feedback.textContent = 'Connection test successful! Gemini Live API verified.';
+        feedback.textContent = `Connection verified! Gemini Live API (${res.model || modelCandidate}) active.`;
       }
       updateKeyBadge(true);
     } else {
@@ -3448,6 +3460,7 @@ async function saveS2SConfig(e) {
   const voice = $('s2sVoiceSelect')?.value;
   const language = $('s2sLanguageSelect')?.value;
   const vadSensitivity = $('s2sVadSelect')?.value;
+  const conversationMode = $('s2sModeSelect')?.value || 'continuous';
 
   try {
     const updated = await window.nexus.s2s.saveConfig({
@@ -3456,7 +3469,8 @@ async function saveS2SConfig(e) {
       model,
       voice,
       language,
-      vadSensitivity
+      vadSensitivity,
+      conversationMode
     });
     s2sStatus = updated;
     updateKeyBadge(updated.hasKey);
@@ -3483,7 +3497,10 @@ function initS2S() {
   window.nexus.s2s.onAudioChunk((chunk) => {
     setS2SState('speaking');
     if (s2sPipeline && chunk?.data) {
-      s2sPipeline.queueAudioChunk(chunk.data);
+      s2sPipeline.queueAudioChunk(chunk.data, chunk.turnId);
+    }
+    if (chunk?.ttfaMs && $('s2sTtfaValue')) {
+      $('s2sTtfaValue').textContent = `${chunk.ttfaMs} ms`;
     }
   });
 
@@ -3494,8 +3511,10 @@ function initS2S() {
   });
 
   window.nexus.s2s.onTurnComplete((info) => {
-    if (s2sState === 'speaking' || s2sState === 'processing') {
-      setS2SState('listening');
+    if (!s2sPipeline?.isPlaying) {
+      if (s2sState === 'speaking' || s2sState === 'processing') {
+        setS2SState('listening');
+      }
     }
     if (s2sActiveTurn.assistantText) {
       appendVoiceTurnToChat(s2sActiveTurn.userText, s2sActiveTurn.assistantText, !!info?.interrupted);
@@ -3505,7 +3524,12 @@ function initS2S() {
 
   window.nexus.s2s.onInterrupted((info) => {
     console.log('[S2S] Server reported barge-in interruption:', info);
-    handleBargeIn('server_vad');
+    handleBargeIn('server_vad', info?.turnId);
+  });
+
+  window.nexus.s2s.onReconnecting?.((data) => {
+    setS2SState('connecting');
+    toast(`Reconnecting voice session (attempt ${data?.attempt || 1}/${data?.maxAttempts || 3})...`, 3000);
   });
 
   window.nexus.s2s.onClosed(() => {

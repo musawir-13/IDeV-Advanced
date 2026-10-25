@@ -641,18 +641,18 @@
         <div class="s2s-grid-2">
           <label class="form-label">Voice Model
             <select id="s2sModelSelect">
-              <option value="models/gemini-2.5-flash-native-audio-latest">Gemini 2.5 Flash Native Audio (Recommended)</option>
-              <option value="models/gemini-3.8-live">Gemini 3.8 Live</option>
-              <option value="models/gemini-3.1-flash-live-preview">Gemini 3.1 Flash Live Preview</option>
+              <option value="models/gemini-3.8-live">Gemini 3.8 Live (Preferred Low-Latency Candidate)</option>
+              <option value="models/gemini-2.0-flash-exp">Gemini 2.0 Flash Multimodal Live</option>
+              <option value="models/gemini-2.5-flash-native-audio-latest">Gemini 2.5 Flash Native Audio</option>
             </select>
           </label>
           <label class="form-label">Voice Persona
             <select id="s2sVoiceSelect">
               <option value="Puck">Puck (Engaging & Clear)</option>
+              <option value="Aoede">Aoede (Dynamic & Bright)</option>
               <option value="Charon">Charon (Calm & Deep)</option>
               <option value="Kore">Kore (Soft & Professional)</option>
               <option value="Fenrir">Fenrir (Authoritative)</option>
-              <option value="Aoede">Aoede (Dynamic & Bright)</option>
             </select>
           </label>
         </div>
@@ -665,13 +665,25 @@
               <option value="hindi">Hindi (Devanagari)</option>
             </select>
           </label>
-          <label class="form-label">Interruption (VAD) Sensitivity
+          <label class="form-label">Turn-Taking Mode
+            <select id="s2sModeSelect">
+              <option value="continuous">Continuous Conversation (Auto Turn-Taking)</option>
+              <option value="push-to-talk">Push-to-Talk (Explicit Talk Window)</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="s2s-grid-2" style="margin-top: 12px;">
+          <label class="form-label">Interruption (Barge-In) Sensitivity
             <select id="s2sVadSelect">
               <option value="medium">Medium (Balanced Barge-In)</option>
               <option value="high">High (Fast Cut-off on quiet speech)</option>
               <option value="low">Low (Resistant to background noise)</option>
             </select>
           </label>
+          <div style="display:flex;flex-direction:column;justify-content:flex-end;">
+            <div id="s2sLatencyLabel" style="font-size:12px;color:var(--text-subtle);margin-bottom:6px;">Last TTFA: <strong id="s2sTtfaValue">—</strong></div>
+          </div>
         </div>
 
         <div class="s2s-audio-meter-box">
