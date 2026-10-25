@@ -21,8 +21,8 @@ const path = require('path');
 const EventEmitter = require('events');
 
 const GEMINI_LIVE_DEFAULT_ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent';
-const DEFAULT_MODEL = 'models/gemini-2.0-flash-exp';
-const FALLBACK_MODEL = 'models/gemini-2.0-flash-exp';
+const DEFAULT_MODEL = 'models/gemini-3.8-live';
+const FALLBACK_MODEL = 'models/gemini-2.5-flash-native-audio-latest';
 const DEFAULT_VOICE = 'Puck';
 
 const HINGLISH_SYSTEM_INSTRUCTION = 
@@ -143,13 +143,8 @@ class GeminiLiveSession extends EventEmitter {
     }
 
     this.apiKey = saved.apiKey || envKey || '';
-    // If the saved model was speculative or candidate (e.g. gemini-3.8-live), use verified DEFAULT_MODEL
     const modelToUse = saved.model || DEFAULT_MODEL;
-    if (modelToUse.includes('3.8') || modelToUse.includes('candidate')) {
-      this.activeModel = DEFAULT_MODEL;
-    } else {
-      this.activeModel = normalizeModel(modelToUse);
-    }
+    this.activeModel = normalizeModel(modelToUse);
     this.activeVoice = saved.voice || DEFAULT_VOICE;
     this.activeLanguage = saved.language || 'hinglish';
     this.engine = saved.engine || 'gemini-live';
@@ -161,8 +156,11 @@ class GeminiLiveSession extends EventEmitter {
    * Save configuration to disk.
    */
   saveConfig(newConfig = {}) {
-    if (newConfig.apiKey !== undefined && newConfig.apiKey !== '••••••••••••••••') {
-      this.apiKey = String(newConfig.apiKey).trim();
+    if (newConfig.apiKey !== undefined) {
+      const candidate = String(newConfig.apiKey).trim();
+      if (candidate && !candidate.includes('•')) {
+        this.apiKey = candidate;
+      }
     }
     if (newConfig.model) this.activeModel = normalizeModel(newConfig.model);
     if (newConfig.voice) this.activeVoice = String(newConfig.voice).trim();
@@ -240,7 +238,8 @@ class GeminiLiveSession extends EventEmitter {
    * Test connection to Gemini Live API with supplied or active key.
    */
   async testConnection(candidateKey = null, modelCandidate = null) {
-    const key = candidateKey && candidateKey !== '••••••••••••••••' ? candidateKey.trim() : this.apiKey;
+    const rawCand = candidateKey ? String(candidateKey).trim() : '';
+    const key = rawCand && !rawCand.includes('•') ? rawCand : this.apiKey;
     if (!key) {
       return { ok: false, error: 'No Gemini API key provided. Please configure your key in S2S Settings.' };
     }
@@ -570,21 +569,34 @@ class GeminiLiveSession extends EventEmitter {
         const reasonText = (event.reason || '').toLowerCase();
         let unrecoverableError = null;
 
-        if (event.code === 1008 || reasonText.includes('api key') || reasonText.includes('api_key_invalid') || reasonText.includes('unauthenticated')) {
+        // 1. Model unsupported or not found on bidi endpoint: trigger fallback to verified FALLBACK_MODEL
+        if (reasonText.includes('model') || reasonText.includes('not found') || reasonText.includes('not supported') || reasonText.includes('bidigeneratecontent')) {
+          if (model !== FALLBACK_MODEL && !this.hasAttemptedFallback) {
+            console.warn(`[GeminiLiveSession] Model ${model} is not supported for Live voice. Falling back to ${FALLBACK_MODEL}...`);
+            this.hasAttemptedFallback = true;
+            this.activeModel = FALLBACK_MODEL;
+            this.saveConfig({ model: FALLBACK_MODEL });
+            this.logDiagnostic('fallback_triggered', { from: model, to: FALLBACK_MODEL });
+            this.startSession({ model: FALLBACK_MODEL, voice, language, isReconnect: true });
+            return;
+          }
+          unrecoverableError = `Voice model ${model} is not available on Gemini Live.`;
+        } else if (reasonText.includes('api key') || reasonText.includes('api_key') || reasonText.includes('unauthenticated') || reasonText.includes('permission_denied')) {
           unrecoverableError = 'Gemini API key is invalid or unauthorized. Please check your key in S2S Settings.';
         } else if (reasonText.includes('quota') || reasonText.includes('resource_exhausted')) {
           unrecoverableError = 'Gemini API quota or rate limit exceeded. Please try again later.';
-        } else if (!wasSetupComplete && model !== FALLBACK_MODEL && !this.hasAttemptedFallback) {
-          // If setup failed on an experimental/candidate model, fall back once to the stable verified model
-          console.warn(`[GeminiLiveSession] Setup failed with model ${model}. Falling back to ${FALLBACK_MODEL}...`);
-          this.hasAttemptedFallback = true;
-          this.activeModel = FALLBACK_MODEL;
-          this.saveConfig({ model: FALLBACK_MODEL });
-          this.logDiagnostic('fallback_triggered', { from: model, to: FALLBACK_MODEL });
-          this.startSession({ model: FALLBACK_MODEL, voice, language, isReconnect: true });
-          return;
-        } else if (reasonText.includes('model') && (reasonText.includes('not found') || reasonText.includes('unsupported'))) {
-          unrecoverableError = `Voice model ${model} is not available on Gemini Live.`;
+        } else if (event.code === 1008) {
+          // If code 1008 without explicit auth error, attempt fallback model before failing
+          if (model !== FALLBACK_MODEL && !this.hasAttemptedFallback) {
+            console.warn(`[GeminiLiveSession] Code 1008 with model ${model}. Attempting fallback to ${FALLBACK_MODEL}...`);
+            this.hasAttemptedFallback = true;
+            this.activeModel = FALLBACK_MODEL;
+            this.saveConfig({ model: FALLBACK_MODEL });
+            this.logDiagnostic('fallback_triggered', { from: model, to: FALLBACK_MODEL });
+            this.startSession({ model: FALLBACK_MODEL, voice, language, isReconnect: true });
+            return;
+          }
+          unrecoverableError = event.reason || 'Gemini API key is invalid or unauthorized. Please check your key in S2S Settings.';
         } else if (event.code === 1007 || event.code === 1002 || event.code === 1003) {
           unrecoverableError = `Protocol error from voice provider (code ${event.code}: ${event.reason || 'Malformed frame'}).`;
         } else if (!wasSetupComplete && this.reconnectAttempts >= 1) {

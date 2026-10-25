@@ -719,10 +719,10 @@ rl.on('line', (line) => {
     assert(mockInterrupt.serverContent.interrupted === true, 'Server barge-in interruption flag detected');
 
     // 6. Preferred candidate model & normalization
-    assert(DEFAULT_MODEL === 'models/gemini-2.0-flash-exp', 'Default S2S model is configured to verified models/gemini-2.0-flash-exp');
-    assert(FALLBACK_MODEL === 'models/gemini-2.0-flash-exp', 'Fallback S2S model is models/gemini-2.0-flash-exp');
-    assert(normalizeModel('gemini-2.0-flash-exp') === 'models/gemini-2.0-flash-exp', 'normalizeModel prepends models/ if missing');
-    assert(normalizeModel('models/gemini-2.0-flash-exp') === 'models/gemini-2.0-flash-exp', 'normalizeModel preserves models/ prefix');
+    assert(DEFAULT_MODEL === 'models/gemini-3.8-live', 'Default S2S model is configured to verified models/gemini-3.8-live');
+    assert(FALLBACK_MODEL === 'models/gemini-2.5-flash-native-audio-latest', 'Fallback S2S model is models/gemini-2.5-flash-native-audio-latest');
+    assert(normalizeModel('gemini-3.8-live') === 'models/gemini-3.8-live', 'normalizeModel prepends models/ if missing');
+    assert(normalizeModel('models/gemini-3.8-live') === 'models/gemini-3.8-live', 'normalizeModel preserves models/ prefix');
     assert(session.conversationMode === 'continuous', 'Session default conversationMode is continuous');
 
     // 7. Resumption handle extraction
@@ -1192,10 +1192,14 @@ rl.on('line', (line) => {
     assert(typeof session.signalEndOfTurn === 'function', 'GeminiLiveSession implements signalEndOfTurn()');
     assert(session.signalEndOfTurn() === false, 'signalEndOfTurn() gracefully returns false when transport is offline');
 
-    // 3. Proactive candidate model normalization (gemini-3.8-live candidate resolves to DEFAULT_MODEL)
+    // 3. Model configuration & bullet-masking protection
     session.saveConfig({ model: 'models/gemini-3.8-live' });
     session.loadConfig();
-    assert(session.activeModel === DEFAULT_MODEL, `Candidate gemini-3.8-live safely defaults to verified ${DEFAULT_MODEL}`);
+    assert(session.activeModel === DEFAULT_MODEL, `Active model defaults to verified ${DEFAULT_MODEL}`);
+
+    session.saveConfig({ apiKey: 'AQ.Ab8RN6JjxWs-SECRET-KEY-12345' });
+    session.saveConfig({ apiKey: 'AQ.A••••••••345' });
+    assert(session.apiKey === 'AQ.Ab8RN6JjxWs-SECRET-KEY-12345', 'Masked bullet key preview never overwrites real secret key in configuration');
 
     // 4. Verify Renderer and Preload IPC Contracts
     const rendererCode = await fs.readFile(path.join(__dirname, '../src/renderer.js'), 'utf8');
