@@ -191,13 +191,13 @@ class IntegrationsRegistry {
       },
       {
         id: 'service-ollama-mesh',
-        name: 'Local Ollama 21-Role Specialist Mesh',
+        name: '21-Role Local AI Specialist Mesh',
         category: 'development',
         icon: 'i-spark',
         version: '0.3.8',
         author: 'IDeV / Founder Ubaid',
         connectionType: 'internal-service',
-        description: 'Founder Ubaid\'s 21-role dedicated specialist team mapped to local Ollama weights with honest capability reporting.',
+        description: 'Founder Ubaid\'s 21-role dedicated specialist team mapped to local high-performance model weights with honest capability reporting.',
         longDescription: 'The core offline AI inference engine of IDeV Advanced. Coordinates 21 distinct software engineering roles (Lead Architect, Frontend Specialist, Security Auditor, Code Fixer, QA Specialist, etc.) over high-speed local HTTP loopback without internet dependency.',
         capabilities: ['streaming-inference', '21-role-routing', 'dynamic-stop', 'local-privacy'],
         permissions: [
@@ -206,7 +206,7 @@ class IntegrationsRegistry {
         ],
         authRequired: false,
         configFields: [],
-        troubleshooting: 'Ensure Ollama is running locally on http://127.0.0.1:11434 with assigned model tags installed.'
+        troubleshooting: 'Ensure the local model inference engine is active on http://127.0.0.1:11434 with assigned model tags installed.'
       },
       {
         id: 'service-command-runner',
@@ -325,7 +325,7 @@ class IntegrationsRegistry {
           return {
             ok: isOllamaUp,
             status: isOllamaUp ? 'connected' : 'unavailable',
-            message: isOllamaUp ? 'Ollama running locally on port 11434' : 'Ollama not detected on 127.0.0.1:11434',
+            message: isOllamaUp ? 'Local model engine active on port 11434' : 'Local model engine not detected on 127.0.0.1:11434',
             latencyMs: Date.now() - startTime
           };
         }

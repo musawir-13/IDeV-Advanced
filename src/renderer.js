@@ -415,10 +415,10 @@ function setConnection(connected, message) {
       dot.classList.toggle('offline', !connected);
     }
     const txt = pill.querySelector('.connection-text');
-    if (txt) txt.textContent = message || (connected ? 'Ollama connected' : 'Ollama unavailable');
+    if (txt) txt.textContent = message || (connected ? 'Local Engine connected' : 'Local Engine offline');
   }
   $('ollamaWarning')?.classList.toggle('hidden', connected);
-  if ($('activeModelHint')) $('activeModelHint').textContent = connected ? 'Ollama · localhost:11434' : 'Start Ollama to chat';
+  if ($('activeModelHint')) $('activeModelHint').textContent = connected ? 'Local AI Engine · 127.0.0.1:11434' : 'Local AI Engine · Offline';
 }
 function switchIntegrationsTab(tabId) {
   document.querySelectorAll('.subnav-tab').forEach(t => {
@@ -2887,20 +2887,20 @@ function updateContextValue() {
 }
 async function checkOllama() {
   const response = await window.nexus.getOllamaVersion();
-  if (response.connected) { setConnection(true, `Ollama ${response.version || 'connected'}`); await refreshModels(); }
-  else { setConnection(false, 'Ollama unavailable'); installedModels = []; renderModelList($('modelSearch').value); renderModelsPage(); renderTeamRoster(); }
+  if (response.connected) { setConnection(true, `Local Engine ${response.version ? 'v' + response.version : 'online'}`); await refreshModels(); }
+  else { setConnection(false, 'Local Engine offline'); installedModels = []; renderModelList($('modelSearch').value); renderModelsPage(); renderTeamRoster(); }
 }
 async function refreshModels() {
   try {
     installedModels = await window.nexus.getModels();
     installedModels.sort((a, b) => a.name.localeCompare(b.name));
     const health = await window.nexus.getOllamaVersion();
-    setConnection(health.connected, health.connected ? `Ollama ${health.version}` : 'Ollama unavailable');
+    setConnection(health.connected, health.connected ? `Local Engine ${health.version ? 'v' + health.version : 'online'}` : 'Local Engine offline');
     if (installedModels.length && !installedModels.some(m => m.name.toLowerCase() === settings.selectedModel.toLowerCase())) settings.selectedModel = installedModels.some(m => m.name === 'qwen3.5:9b') ? 'qwen3.5:9b' : installedModels[0].name;
     saveSettings(); updateModelSelector(); renderModelList($('modelSearch').value); renderModelsPage(); renderTeamRoster();
     return installedModels;
   } catch (error) {
-    installedModels = []; setConnection(false, 'Ollama unavailable'); renderModelList($('modelSearch').value); renderModelsPage(); renderTeamRoster();
+    installedModels = []; setConnection(false, 'Local Engine offline'); renderModelList($('modelSearch').value); renderModelsPage(); renderTeamRoster();
     return [];
   }
 }
@@ -2909,7 +2909,7 @@ function renderModelsPage() {
   $('installedCount').textContent = installedModels.length;
   $('ollamaWarning').classList.toggle('hidden', installedModels.length > 0);
   root.innerHTML = '';
-  if (!installedModels.length) { root.innerHTML = '<div class="empty-models">No installed models were returned by Ollama. Open Ollama and refresh, or enter a model tag above to pull one.</div>'; return; }
+  if (!installedModels.length) { root.innerHTML = '<div class="empty-models">No installed models found. Start the local model service and pull a specialist model above.</div>'; return; }
   for (const model of installedModels) {
     const card = document.createElement('div'); card.className = 'installed-model';
     card.innerHTML = '<div class="model-token"><svg><use href="#i-code"/></svg></div><div class="model-meta"><strong></strong><small></small></div><span class="model-size-pill"></span>';

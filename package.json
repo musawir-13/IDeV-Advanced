@@ -1,7 +1,7 @@
 {
   "name": "idev-local-ai",
   "version": "0.3.8",
-  "description": "IDeV Advanced \u2014 local-first AI workspace with image attachments, local screen capture sharing, Ollama vision input, and full-team build orchestration.",
+  "description": "IDeV Advanced — local-first autonomous AI desktop workspace with multi-agent build orchestration, real-time S2S voice AI, and extensible MCP tooling.",
   "main": "main.js",
   "author": "Ubaid \u2014 IDeV",
   "license": "UNLICENSED",
