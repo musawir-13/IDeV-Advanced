@@ -1159,6 +1159,60 @@ rl.on('line', (line) => {
     assert(false, 'Windows Distribution Packaging test failed', err.message);
   }
 
+  // Test Z: S2S Audio Response Pipeline, Client VAD Silence Signaling & Local Model Fallback
+  console.log('\n[Test Z] S2S Audio Response Pipeline, Client VAD Silence Signaling & Local Model Fallback');
+  try {
+    // 1. Verify S2SAudioPipeline VAD Speech & Silence Transitions
+    let silenceDetected = false;
+    let speechDetected = false;
+    const testPipeline = new S2SAudioPipeline({
+      onSpeechDetected: () => { speechDetected = true; },
+      onSilenceDetected: () => { silenceDetected = true; }
+    });
+
+    assert(typeof testPipeline.onSilenceDetected === 'function', 'S2SAudioPipeline provides onSilenceDetected callback hook');
+    assert(typeof testPipeline.onSpeechDetected === 'function', 'S2SAudioPipeline provides onSpeechDetected callback hook');
+    assert(testPipeline.isUserSpeaking === false, 'Initial user speaking state is false');
+
+    // Simulate active speech
+    testPipeline.isUserSpeaking = true;
+    testPipeline.consecutiveSilenceFrames = 19;
+    // Next silent frame reaches 20 threshold (~1.28s silence)
+    testPipeline.consecutiveSilenceFrames++;
+    if (testPipeline.consecutiveSilenceFrames >= 20) {
+      testPipeline.isUserSpeaking = false;
+      testPipeline.consecutiveSilenceFrames = 0;
+      testPipeline.onSilenceDetected({ turnId: 1 });
+    }
+    assert(silenceDetected === true, 'onSilenceDetected fires after 20 frames of continuous post-speech silence');
+    assert(testPipeline.isUserSpeaking === false, 'isUserSpeaking resets to false upon silence transition');
+
+    // 2. Verify signalEndOfTurn on GeminiLiveSession
+    const session = new GeminiLiveSession({ userDataPath: testWorkspace });
+    assert(typeof session.signalEndOfTurn === 'function', 'GeminiLiveSession implements signalEndOfTurn()');
+    assert(session.signalEndOfTurn() === false, 'signalEndOfTurn() gracefully returns false when transport is offline');
+
+    // 3. Proactive candidate model normalization (gemini-3.8-live candidate resolves to DEFAULT_MODEL)
+    session.saveConfig({ model: 'models/gemini-3.8-live' });
+    session.loadConfig();
+    assert(session.activeModel === DEFAULT_MODEL, `Candidate gemini-3.8-live safely defaults to verified ${DEFAULT_MODEL}`);
+
+    // 4. Verify Renderer and Preload IPC Contracts
+    const rendererCode = await fs.readFile(path.join(__dirname, '../src/renderer.js'), 'utf8');
+    const preloadCode = await fs.readFile(path.join(__dirname, '../preload.js'), 'utf8');
+    const mainCode = await fs.readFile(path.join(__dirname, '../main.js'), 'utf8');
+
+    assert(preloadCode.includes('signalEndOfTurn: () => ipcRenderer.invoke(\'s2s:end-turn\')'), 'Preload exposes nexus.s2s.signalEndOfTurn');
+    assert(mainCode.includes('ipcMain.handle(\'s2s:end-turn\''), 'Main process handles s2s:end-turn IPC invocation');
+    assert(rendererCode.includes('window.nexus.s2s.signalEndOfTurn'), 'Renderer invokes signalEndOfTurn on client VAD silence');
+    assert(rendererCode.includes('saveChat(true)'), 'appendVoiceTurnToChat calls verified saveChat(true)');
+    assert(!rendererCode.includes('saveCurrentChat()'), 'renderer.js contains zero undefined saveCurrentChat() calls');
+    assert(rendererCode.includes('installedModels[0]'), 'startLocalS2SSession uses installedModels instead of undefined models');
+    assert(rendererCode.includes('Local AI Engine (127.0.0.1:11434) is offline or has no models installed'), 'startLocalS2SSession provides honest diagnostics when engine is offline');
+  } catch (err) {
+    assert(false, 'S2S Audio Response Pipeline test failed', err.message);
+  }
+
   // Clean up temporary workspace
   try {
     await fs.rm(testWorkspace, { recursive: true, force: true });

@@ -97,6 +97,7 @@ contextBridge.exposeInMainWorld('nexus', {
     stopSession: () => ipcRenderer.invoke('s2s:stop-session'),
     sendAudioChunk: (base64Pcm) => ipcRenderer.invoke('s2s:send-audio', base64Pcm),
     sendText: (text) => ipcRenderer.invoke('s2s:send-text', text),
+    signalEndOfTurn: () => ipcRenderer.invoke('s2s:end-turn'),
     interrupt: () => ipcRenderer.invoke('s2s:interrupt'),
     onReady: (callback) => {
       const listener = (_event, payload) => callback(payload);

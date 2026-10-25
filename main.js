@@ -670,6 +670,10 @@ ipcMain.handle('s2s:send-text', async (_event, text) => {
   if (!geminiLiveSession) return false;
   return geminiLiveSession.sendTextTurn(text);
 });
+ipcMain.handle('s2s:end-turn', async () => {
+  if (!geminiLiveSession) return false;
+  return geminiLiveSession.signalEndOfTurn();
+});
 ipcMain.handle('s2s:interrupt', async () => {
   if (!geminiLiveSession) return false;
   return geminiLiveSession.interrupt();

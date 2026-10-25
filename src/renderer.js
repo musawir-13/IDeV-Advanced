@@ -3207,6 +3207,13 @@ async function startS2SSession() {
           window.nexus.s2s.interrupt();
           handleBargeIn('client_vad', turnId);
         },
+        onSilenceDetected: ({ turnId }) => {
+          console.log('[S2S] Client VAD silence detected after speech, signaling end of turn to Gemini Live');
+          if (s2sState === 'listening') {
+            setS2SState('processing');
+            window.nexus.s2s.signalEndOfTurn?.();
+          }
+        },
         onPlaybackEnded: ({ turnId }) => {
           if (s2sState === 'speaking') {
             setS2SState('listening');
@@ -3309,15 +3316,24 @@ function appendVoiceTurnToChat(userText, assistantText, wasInterrupted = false) 
   }
 
   renderMessages();
-  saveCurrentChat();
+  saveChat(true);
 }
 
 async function startLocalS2SSession() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
-    toast('Web Speech recognition is not supported in this environment for Local mode.', 5000);
+    const errorMsg = 'Web Speech recognition is not supported in this environment for Local mode. Please switch to Gemini Live mode in S2S Settings.';
+    setS2SState('error', { error: errorMsg });
+    toast(errorMsg, 6000);
     return;
   }
+
+  // Pre-probe installed Ollama models to ensure availability
+  try {
+    if (!installedModels || installedModels.length === 0) {
+      installedModels = await window.nexus.getModels();
+    }
+  } catch (err) {}
 
   setS2SState('listening');
   toast('Local Offline Voice Mode active (Ollama + System TTS). Speak in Hinglish or English.', 4000);
@@ -3333,10 +3349,71 @@ async function startLocalS2SSession() {
       const userSpeech = last[0].transcript.trim();
       if (!userSpeech) return;
 
+      // 1. Immediately display user voice turn in chat for instant visual feedback
+      chatMessages.push({
+        id: `msg-${Date.now()}-u`,
+        role: 'user',
+        content: userSpeech,
+        timestamp: new Date().toISOString(),
+        isVoice: true
+      });
+      renderMessages();
+      saveChat(true);
+
+      // 2. Transition orb to processing
       setS2SState('processing');
+
+      // 3. Resolve active Ollama model with reliable fallback
+      let modelToUse = null;
+      if (installedModels && installedModels.length > 0) {
+        // Prefer currently selected model if installed
+        if (settings.selectedModel && installedModels.some(m => m.name.toLowerCase() === settings.selectedModel.toLowerCase())) {
+          modelToUse = settings.selectedModel;
+        } else {
+          modelToUse = installedModels[0].name;
+        }
+      }
+
+      // If still not resolved, query Ollama /api/tags directly
+      if (!modelToUse) {
+        try {
+          const probe = await fetch('http://127.0.0.1:11434/api/tags');
+          if (probe.ok) {
+            const tagsData = await probe.json();
+            if (Array.isArray(tagsData.models) && tagsData.models.length > 0) {
+              installedModels = tagsData.models;
+              modelToUse = installedModels[0].name;
+            }
+          }
+        } catch (e) {}
+      }
+
+      // If Ollama is offline or has 0 models installed:
+      if (!modelToUse) {
+        const noModelMsg = 'Local AI Engine (127.0.0.1:11434) is offline or has no models installed. Please run "ollama serve" and install a model, or configure Gemini Live in S2S Settings.';
+        setS2SState('error', { error: 'Ollama offline or no models installed' });
+        toast(noModelMsg, 7000);
+        speakLocalText('Local AI engine is offline or has no installed models. Please check Ollama or configure Gemini Live in settings.');
+        chatMessages.push({
+          id: `msg-${Date.now()}-err`,
+          role: 'assistant',
+          content: `⚠️ **Local Engine Error:** ${noModelMsg}`,
+          timestamp: new Date().toISOString(),
+          isVoice: true
+        });
+        renderMessages();
+        saveChat(true);
+        setTimeout(() => { if (s2sState === 'error') setS2SState('listening'); }, 4000);
+        return;
+      }
+
+      // Check if specialized role model is installed, otherwise use resolved modelToUse
+      const specialist = typeof selectBuildRole === 'function' ? selectBuildRole(userSpeech) : null;
+      if (specialist?.model && installedModels.some(m => m.name.toLowerCase() === specialist.model.toLowerCase())) {
+        modelToUse = specialist.model;
+      }
+
       try {
-        const specialist = selectBuildRole(userSpeech) || ROLE_REGISTRY[0];
-        let assistantReply = '';
         const systemPrompt = 'You are IDeV Voice built by Ubaid. Speak conversationally and concisely in natural Hinglish (using Roman script). Keep responses very brief (1-2 sentences) for spoken dialogue.';
         const messages = [
           { role: 'system', content: systemPrompt },
@@ -3347,7 +3424,7 @@ async function startLocalS2SSession() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: specialist.model || (models[0]?.name || 'deepseek-r1:1.5b'),
+            model: modelToUse,
             messages: messages,
             stream: false
           })
@@ -3355,20 +3432,42 @@ async function startLocalS2SSession() {
 
         if (res.ok) {
           const data = await res.json();
-          assistantReply = data.message?.content || '';
+          let assistantReply = data.message?.content || '';
           assistantReply = assistantReply.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-          
+
+          if (!assistantReply) {
+            assistantReply = 'Haan ji, main aapki baat samajh gaya. Bataiye aage kya karna hai?';
+          }
+
           setS2SState('speaking');
+          chatMessages.push({
+            id: `msg-${Date.now()}-a`,
+            role: 'assistant',
+            content: assistantReply,
+            timestamp: new Date().toISOString(),
+            isVoice: true,
+            model: modelToUse
+          });
+          renderMessages();
+          saveChat(true);
+
           speakLocalText(assistantReply, () => {
-            appendVoiceTurnToChat(userSpeech, assistantReply, false);
             if (s2sState === 'speaking') setS2SState('listening');
           });
         } else {
-          setS2SState('listening');
+          const errData = await res.json().catch(() => ({}));
+          const errMsg = errData.error || `HTTP ${res.status} from Ollama`;
+          setS2SState('error', { error: errMsg });
+          toast(`Ollama model error (${modelToUse}): ${errMsg}`, 6000);
+          speakLocalText(`Local model error: ${errMsg}`);
+          setTimeout(() => { if (s2sState === 'error') setS2SState('listening'); }, 4000);
         }
       } catch (err) {
-        console.error('Local speech error:', err);
-        setS2SState('listening');
+        console.error('Local speech inference error:', err);
+        setS2SState('error', { error: err.message });
+        toast(`Local speech error: ${err.message}`, 5000);
+        speakLocalText('Could not connect to local AI engine. Please verify Ollama is running.');
+        setTimeout(() => { if (s2sState === 'error') setS2SState('listening'); }, 4000);
       }
     }
   };
@@ -3376,11 +3475,15 @@ async function startLocalS2SSession() {
   s2sLocalRecognition.onerror = (e) => {
     if (e.error !== 'no-speech') {
       console.warn('Local recognition error:', e.error);
+      if (e.error === 'not-allowed') {
+        setS2SState('error', { error: 'Microphone permission denied' });
+        toast('Microphone access denied. Please allow microphone in Windows privacy settings.', 6000);
+      }
     }
   };
 
   s2sLocalRecognition.onend = () => {
-    if (s2sState !== 'idle' && s2sStatus.engine === 'local') {
+    if (s2sState !== 'idle' && s2sState !== 'ending' && s2sStatus.engine === 'local') {
       try { s2sLocalRecognition.start(); } catch {}
     }
   };
@@ -3389,6 +3492,7 @@ async function startLocalS2SSession() {
     s2sLocalRecognition.start();
   } catch (err) {
     setS2SState('error', { error: err.message });
+    toast(`Could not start speech recognition: ${err.message}`, 5000);
   }
 }
 
@@ -3401,6 +3505,12 @@ function speakLocalText(text, onDone) {
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.rate = 1.05;
   utterance.pitch = 1.0;
+
+  // Prefer Indian English / Hindi voice if available
+  const voices = window.speechSynthesis.getVoices?.() || [];
+  const preferredVoice = voices.find(v => v.lang.includes('hi') || v.lang.includes('en-IN')) || voices[0];
+  if (preferredVoice) utterance.voice = preferredVoice;
+
   utterance.onend = () => onDone?.();
   utterance.onerror = () => onDone?.();
   window.speechSynthesis.speak(utterance);
@@ -3530,6 +3640,7 @@ function initS2S() {
 
   window.nexus.s2s.onAudioChunk((chunk) => {
     setS2SState('speaking');
+    s2sActiveTurn.hasReceivedAudio = true;
     if (s2sPipeline && chunk?.data) {
       s2sPipeline.queueAudioChunk(chunk.data, chunk.turnId);
     }
@@ -3550,9 +3661,16 @@ function initS2S() {
         setS2SState('listening');
       }
     }
-    if (s2sActiveTurn.assistantText) {
+    // If audio parts arrived without plain text transcript, provide placeholder so chat has visual record
+    if (s2sActiveTurn.hasReceivedAudio && !s2sActiveTurn.assistantText) {
+      s2sActiveTurn.assistantText = '🎙️ [Spoken Voice Response]';
+    }
+    if (!s2sActiveTurn.userText && s2sActiveTurn.hasReceivedAudio) {
+      s2sActiveTurn.userText = '🎙️ [Voice Input]';
+    }
+    if (s2sActiveTurn.assistantText || s2sActiveTurn.userText) {
       appendVoiceTurnToChat(s2sActiveTurn.userText, s2sActiveTurn.assistantText, !!info?.interrupted);
-      s2sActiveTurn = { userText: '', assistantText: '', isInterrupted: false };
+      s2sActiveTurn = { userText: '', assistantText: '', isInterrupted: false, hasReceivedAudio: false };
     }
   });
 

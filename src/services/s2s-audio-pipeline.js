@@ -118,6 +118,8 @@ class S2SAudioPipeline {
     this.onVolume = options.onVolume || (() => {});
     this.onBargeIn = options.onBargeIn || (() => {});
     this.onPlaybackEnded = options.onPlaybackEnded || (() => {});
+    this.onSilenceDetected = options.onSilenceDetected || (() => {});
+    this.onSpeechDetected = options.onSpeechDetected || (() => {});
     this.vadThreshold = options.vadThreshold || 0.045; // RMS threshold for barge-in
     this.bufferSize = options.bufferSize || 1024; // 1024 samples = 64ms at 16kHz
 
@@ -128,11 +130,13 @@ class S2SAudioPipeline {
     this.processorNode = null;
 
     this.isPlaying = false;
+    this.isUserSpeaking = false;
     this.activeSources = new Set();
     this.nextPlayTime = 0;
     this.isCapturing = false;
     this.activeTurnId = 1;
     this.consecutiveSpeechFrames = 0;
+    this.consecutiveSilenceFrames = 0;
   }
 
   setVadSensitivity(level) {
@@ -186,13 +190,30 @@ class S2SAudioPipeline {
 
         if (rms > effectiveThreshold) {
           this.consecutiveSpeechFrames++;
-          // Require at least 2 consecutive frames (~64ms) to filter out transient pops/clicks
-          if (this.isPlaying && this.consecutiveSpeechFrames >= 2) {
-            this.interruptPlayback();
-            this.onBargeIn({ reason: 'local_vad', rms, turnId: this.activeTurnId });
+          this.consecutiveSilenceFrames = 0;
+          // Require at least 2 consecutive frames (~128ms) to confirm active human speech
+          if (this.consecutiveSpeechFrames >= 2) {
+            if (!this.isUserSpeaking) {
+              this.isUserSpeaking = true;
+              this.onSpeechDetected({ rms, db, turnId: this.activeTurnId });
+            }
+            if (this.isPlaying) {
+              this.interruptPlayback();
+              this.onBargeIn({ reason: 'local_vad', rms, turnId: this.activeTurnId });
+            }
           }
         } else {
           this.consecutiveSpeechFrames = 0;
+          if (this.isUserSpeaking) {
+            this.consecutiveSilenceFrames++;
+            // 20 chunks = ~1.28 seconds of silence after active speech:
+            // Signals end of user turn so Gemini or local engine triggers immediate generation
+            if (this.consecutiveSilenceFrames >= 20) {
+              this.isUserSpeaking = false;
+              this.consecutiveSilenceFrames = 0;
+              this.onSilenceDetected({ turnId: this.activeTurnId });
+            }
+          }
         }
 
         // Convert to 16-bit Linear PCM
@@ -228,7 +249,7 @@ class S2SAudioPipeline {
       this.nextPlayTime = this.playbackContext.currentTime;
     }
     if (this.playbackContext.state === 'suspended') {
-      this.playbackContext.resume();
+      this.playbackContext.resume().catch(e => console.warn('[S2S] AudioContext resume error:', e));
     }
   }
 

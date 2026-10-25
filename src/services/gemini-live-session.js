@@ -143,9 +143,13 @@ class GeminiLiveSession extends EventEmitter {
     }
 
     this.apiKey = saved.apiKey || envKey || '';
-    // If the saved model was the speculative gemini-3.8-live, default cleanly to gemini-2.0-flash-exp
+    // If the saved model was speculative or candidate (e.g. gemini-3.8-live), use verified DEFAULT_MODEL
     const modelToUse = saved.model || DEFAULT_MODEL;
-    this.activeModel = normalizeModel(modelToUse);
+    if (modelToUse.includes('3.8') || modelToUse.includes('candidate')) {
+      this.activeModel = DEFAULT_MODEL;
+    } else {
+      this.activeModel = normalizeModel(modelToUse);
+    }
     this.activeVoice = saved.voice || DEFAULT_VOICE;
     this.activeLanguage = saved.language || 'hinglish';
     this.engine = saved.engine || 'gemini-live';
@@ -570,17 +574,16 @@ class GeminiLiveSession extends EventEmitter {
           unrecoverableError = 'Gemini API key is invalid or unauthorized. Please check your key in S2S Settings.';
         } else if (reasonText.includes('quota') || reasonText.includes('resource_exhausted')) {
           unrecoverableError = 'Gemini API quota or rate limit exceeded. Please try again later.';
+        } else if (!wasSetupComplete && model !== FALLBACK_MODEL && !this.hasAttemptedFallback) {
+          // If setup failed on an experimental/candidate model, fall back once to the stable verified model
+          console.warn(`[GeminiLiveSession] Setup failed with model ${model}. Falling back to ${FALLBACK_MODEL}...`);
+          this.hasAttemptedFallback = true;
+          this.activeModel = FALLBACK_MODEL;
+          this.saveConfig({ model: FALLBACK_MODEL });
+          this.logDiagnostic('fallback_triggered', { from: model, to: FALLBACK_MODEL });
+          this.startSession({ model: FALLBACK_MODEL, voice, language, isReconnect: true });
+          return;
         } else if (reasonText.includes('model') && (reasonText.includes('not found') || reasonText.includes('unsupported'))) {
-          // If a candidate model failed, try falling back once to stable verified model
-          if (model !== FALLBACK_MODEL && !this.hasAttemptedFallback) {
-            console.warn(`[GeminiLiveSession] Model ${model} is unavailable. Falling back to ${FALLBACK_MODEL}...`);
-            this.hasAttemptedFallback = true;
-            this.activeModel = FALLBACK_MODEL;
-            this.saveConfig({ model: FALLBACK_MODEL });
-            this.logDiagnostic('fallback_triggered', { from: model, to: FALLBACK_MODEL });
-            this.startSession({ model: FALLBACK_MODEL, voice, language, isReconnect: true });
-            return;
-          }
           unrecoverableError = `Voice model ${model} is not available on Gemini Live.`;
         } else if (event.code === 1007 || event.code === 1002 || event.code === 1003) {
           unrecoverableError = `Protocol error from voice provider (code ${event.code}: ${event.reason || 'Malformed frame'}).`;
@@ -721,6 +724,21 @@ class GeminiLiveSession extends EventEmitter {
       return true;
     } catch (err) {
       console.error('[GeminiLiveSession] sendTextTurn error:', err.message);
+      return false;
+    }
+  }
+
+  /**
+   * Signal end of user speech turn to trigger immediate AI generation.
+   */
+  signalEndOfTurn() {
+    if (!this.isConnected || !this.ws || !this.isSetupComplete) return false;
+    try {
+      this.ws.send(JSON.stringify({ clientContent: { turnComplete: true } }));
+      this.logDiagnostic('client_turn_complete_signaled');
+      return true;
+    } catch (err) {
+      console.error('[GeminiLiveSession] signalEndOfTurn error:', err.message);
       return false;
     }
   }
