@@ -90,6 +90,7 @@ contextBridge.exposeInMainWorld('nexus', {
   // Real-Time Speech-to-Speech (S2S) Engine
   s2s: {
     getStatus: () => ipcRenderer.invoke('s2s:get-status'),
+    getDiagnostics: () => ipcRenderer.invoke('s2s:get-diagnostics'),
     saveConfig: (config) => ipcRenderer.invoke('s2s:save-config', config),
     testConnection: (candidateKey) => ipcRenderer.invoke('s2s:test-connection', candidateKey),
     startSession: (options) => ipcRenderer.invoke('s2s:start-session', options),

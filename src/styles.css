@@ -240,7 +240,14 @@
   opacity: 0.8;
 }
 
-/* 2. Connecting */
+/* 2. Requesting Permission */
+.s2s-orb-button.s2s-requesting_permission {
+  background: linear-gradient(135deg, #0284c7 0%, #2563eb 100%);
+  animation: s2s-permission-pulse 1.4s infinite ease-in-out;
+  box-shadow: 0 0 0 4px rgba(2, 132, 199, 0.35);
+}
+
+/* 3. Connecting */
 .s2s-orb-button.s2s-connecting {
   background: linear-gradient(135deg, #06b6d4 0%, #2563eb 100%);
   animation: s2s-connecting-pulse 1.2s infinite ease-in-out;
@@ -254,7 +261,14 @@
 .s2s-orb-button.s2s-connecting .bar-4 { animation-delay: 0.4s; }
 .s2s-orb-button.s2s-connecting .bar-5 { animation-delay: 0.5s; }
 
-/* 3. Listening (User speaking) */
+/* 4. Initializing (Awaiting setupComplete) */
+.s2s-orb-button.s2s-initializing {
+  background: linear-gradient(135deg, #6366f1 0%, #3b82f6 100%);
+  animation: s2s-connecting-pulse 1s infinite ease-in-out;
+  box-shadow: 0 0 14px rgba(99, 102, 241, 0.5);
+}
+
+/* 5. Listening (User speaking) */
 .s2s-orb-button.s2s-listening {
   background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
   box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.25), 0 0 20px rgba(59, 130, 246, 0.6);
@@ -264,14 +278,14 @@
   animation: s2s-listen-glow 1.5s infinite ease-in-out;
 }
 
-/* 4. Processing */
+/* 6. Processing */
 .s2s-orb-button.s2s-processing {
   background: linear-gradient(135deg, #8b5cf6 0%, #3b82f6 100%);
   animation: s2s-processing-rotate 2s linear infinite;
   box-shadow: 0 0 16px rgba(139, 92, 246, 0.5);
 }
 
-/* 5. Speaking (Assistant talking) */
+/* 7. Speaking (Assistant talking) */
 .s2s-orb-button.s2s-speaking {
   background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
   box-shadow: 0 0 0 5px rgba(2, 132, 199, 0.3), 0 0 24px rgba(56, 189, 248, 0.7);
@@ -285,24 +299,53 @@
 .s2s-orb-button.s2s-speaking .bar-4 { animation-delay: 0.18s; }
 .s2s-orb-button.s2s-speaking .bar-5 { animation-delay: 0.28s; }
 
-/* 6. Interrupted (Barge-in cut-off) */
+/* 8. Reconnecting */
+.s2s-orb-button.s2s-reconnecting {
+  background: linear-gradient(135deg, #d97706 0%, #2563eb 100%);
+  animation: s2s-reconnecting-pulse 1.3s infinite ease-in-out;
+  box-shadow: 0 0 0 4px rgba(217, 119, 6, 0.3), 0 0 16px rgba(217, 119, 6, 0.5);
+}
+
+/* 9. Interrupted (Barge-in cut-off) */
 .s2s-orb-button.s2s-interrupted {
   background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
   box-shadow: 0 0 0 6px rgba(245, 158, 11, 0.35), 0 0 22px rgba(245, 158, 11, 0.8);
   animation: s2s-interrupt-flash 0.35s ease-out;
 }
 
-/* 7. Muted */
+/* 10. Muted */
 .s2s-orb-button.s2s-muted {
   background: linear-gradient(135deg, #64748b 0%, #475569 100%);
   box-shadow: none;
   opacity: 0.7;
 }
 
-/* 8. Error */
+/* 11. Error */
 .s2s-orb-button.s2s-error {
   background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%);
   box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.3), 0 0 16px rgba(239, 68, 68, 0.6);
+  cursor: pointer;
+}
+
+/* 12. Ending */
+.s2s-orb-button.s2s-ending {
+  background: linear-gradient(135deg, #64748b 0%, #334155 100%);
+  opacity: 0.6;
+  transform: scale(0.94);
+  transition: all 0.25s ease;
+}
+
+/* Keyframes */
+@keyframes s2s-reconnecting-pulse {
+  0% { transform: scale(1); filter: brightness(1); }
+  50% { transform: scale(1.04); filter: brightness(1.2); }
+  100% { transform: scale(1); filter: brightness(1); }
+}
+
+@keyframes s2s-permission-pulse {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(2, 132, 199, 0.6); }
+  50% { transform: scale(1.06); box-shadow: 0 0 0 6px rgba(2, 132, 199, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(2, 132, 199, 0); }
 }
 
 /* Orb Keyframes */

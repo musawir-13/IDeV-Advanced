@@ -207,7 +207,17 @@ class S2SAudioPipeline {
       return true;
     } catch (err) {
       console.error('[S2SAudioPipeline] initCapture error:', err);
-      throw err;
+      let friendly = err.message || 'Microphone initialization failed.';
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        friendly = 'Microphone access denied. Please allow microphone access in Windows Privacy Settings.';
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        friendly = 'No microphone device found. Please connect an audio input device.';
+      } else if (err.name === 'NotReadableError') {
+        friendly = 'Microphone is currently in use by another application.';
+      }
+      const wrappedErr = new Error(friendly);
+      wrappedErr.name = err.name;
+      throw wrappedErr;
     }
   }
 

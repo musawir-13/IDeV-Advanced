@@ -3090,23 +3090,41 @@ function setS2SState(newState, meta = {}) {
   const btn = $('s2sOrbBtn');
   if (!btn) return;
 
-  const validStates = ['idle', 'connecting', 'listening', 'processing', 'speaking', 'interrupted', 'muted', 'error'];
+  const validStates = [
+    'idle',
+    'requesting_permission',
+    'connecting',
+    'initializing',
+    'listening',
+    'processing',
+    'speaking',
+    'reconnecting',
+    'interrupted',
+    'muted',
+    'error',
+    'ending'
+  ];
   validStates.forEach(s => btn.classList.remove(`s2s-${s}`));
   btn.classList.add(`s2s-${newState}`);
 
   const titles = {
     idle: 'Start Live Speech-to-Speech (IDeV S2S) · Right-click for Settings',
-    connecting: 'Connecting to IDeV Voice (Gemini Live)...',
-    listening: 'Listening to your voice... Speak naturally in Hinglish',
-    processing: 'Processing speech...',
-    speaking: 'IDeV Voice is speaking... (Start talking to interrupt / barge-in)',
+    requesting_permission: 'Requesting microphone permission... Please allow in prompt',
+    connecting: 'Connecting to voice service... Click to cancel',
+    initializing: 'Initializing session with Gemini Live... Click to cancel',
+    listening: 'Listening to your voice... Speak naturally in Hinglish (Click to end)',
+    processing: 'Processing speech... (Click to end)',
+    speaking: 'IDeV Voice is speaking... (Start talking to interrupt / barge-in, or click to stop)',
+    reconnecting: `Reconnecting voice session (attempt ${meta.attempt || 1}/${meta.maxAttempts || 3})... Click to cancel`,
     interrupted: 'Interrupted! Listening to your new question...',
     muted: 'Microphone muted',
-    error: meta.error ? `S2S Error: ${meta.error}` : 'S2S Voice Error'
+    error: meta.error ? `S2S Error: ${meta.error} · Click to retry` : 'S2S Voice Error · Click to retry',
+    ending: 'Ending voice session...'
   };
 
   btn.title = titles[newState] || 'IDeV Live Voice';
   btn.setAttribute('aria-pressed', newState !== 'idle' ? 'true' : 'false');
+  btn.setAttribute('aria-label', titles[newState] || 'IDeV Live Voice');
 
   if (newState === 'interrupted') {
     setTimeout(() => {
@@ -3139,10 +3157,14 @@ function updateS2SWaveform(rms, db) {
 }
 
 async function toggleS2SSession() {
-  if (s2sState !== 'idle') {
-    await stopS2SSession();
-  } else {
+  if (s2sState === 'idle') {
     await startS2SSession();
+  } else if (s2sState === 'error') {
+    // In error state, clicking retries immediately
+    await startS2SSession();
+  } else {
+    // Any active or in-flight state (connecting, initializing, listening, speaking, reconnecting) cancels cleanly
+    await stopS2SSession();
   }
 }
 
@@ -3161,12 +3183,14 @@ async function startS2SSession() {
     }
 
     if (!s2sStatus.hasKey) {
+      setS2SState('error', { error: 'Gemini API key is missing. Right-click orb to configure.' });
       toast('Please enter and save your Gemini API key in S2S Settings to start Live Voice.', 6000);
       openS2SModal();
       return;
     }
 
-    setS2SState('connecting');
+    // 1. Request microphone access
+    setS2SState('requesting_permission');
 
     if (!s2sPipeline && typeof S2SAudioPipeline !== 'undefined') {
       s2sPipeline = new S2SAudioPipeline({
@@ -3193,8 +3217,17 @@ async function startS2SSession() {
 
     if (s2sPipeline) {
       s2sPipeline.setVadSensitivity(s2sStatus.vadSensitivity || 'medium');
-      await s2sPipeline.initCapture();
+      try {
+        await s2sPipeline.initCapture();
+      } catch (micErr) {
+        setS2SState('error', { error: micErr.message });
+        toast(micErr.message, 6000);
+        return;
+      }
     }
+
+    // 2. Start transport connection
+    setS2SState('connecting');
 
     const res = await window.nexus.s2s.startSession({
       model: s2sStatus.model,
@@ -3216,6 +3249,7 @@ async function startS2SSession() {
 }
 
 async function stopS2SSession() {
+  setS2SState('ending');
   if (s2sPipeline) {
     s2sPipeline.cleanup();
   }
@@ -3528,8 +3562,8 @@ function initS2S() {
   });
 
   window.nexus.s2s.onReconnecting?.((data) => {
-    setS2SState('connecting');
-    toast(`Reconnecting voice session (attempt ${data?.attempt || 1}/${data?.maxAttempts || 3})...`, 3000);
+    setS2SState('reconnecting', { attempt: data?.attempt || 1, maxAttempts: data?.maxAttempts || 3 });
+    toast(`Reconnecting voice session (attempt ${data?.attempt || 1}/${data?.maxAttempts || 3})... Click orb to cancel.`, 3000);
   });
 
   window.nexus.s2s.onClosed(() => {
@@ -3539,12 +3573,15 @@ function initS2S() {
   });
 
   window.nexus.s2s.onError((err) => {
-    setS2SState('error', { error: err.message });
-    toast(`S2S Voice Error: ${err.message}`, 6000);
+    const errorMsg = err?.message || String(err);
+    setS2SState('error', { error: errorMsg });
+    toast(`S2S Error: ${errorMsg}`, 6000);
   });
 
   window.nexus.s2s.onStateChange((data) => {
-    if (data?.state) setS2SState(data.state);
+    if (data?.state) {
+      setS2SState(data.state, data);
+    }
   });
 }
 

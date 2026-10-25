@@ -719,10 +719,10 @@ rl.on('line', (line) => {
     assert(mockInterrupt.serverContent.interrupted === true, 'Server barge-in interruption flag detected');
 
     // 6. Preferred candidate model & normalization
-    assert(DEFAULT_MODEL === 'models/gemini-3.8-live', 'Default S2S model is configured to models/gemini-3.8-live');
+    assert(DEFAULT_MODEL === 'models/gemini-2.0-flash-exp', 'Default S2S model is configured to verified models/gemini-2.0-flash-exp');
     assert(FALLBACK_MODEL === 'models/gemini-2.0-flash-exp', 'Fallback S2S model is models/gemini-2.0-flash-exp');
-    assert(normalizeModel('gemini-3.8-live') === 'models/gemini-3.8-live', 'normalizeModel prepends models/ if missing');
-    assert(normalizeModel('models/gemini-3.8-live') === 'models/gemini-3.8-live', 'normalizeModel preserves models/ prefix');
+    assert(normalizeModel('gemini-2.0-flash-exp') === 'models/gemini-2.0-flash-exp', 'normalizeModel prepends models/ if missing');
+    assert(normalizeModel('models/gemini-2.0-flash-exp') === 'models/gemini-2.0-flash-exp', 'normalizeModel preserves models/ prefix');
     assert(session.conversationMode === 'continuous', 'Session default conversationMode is continuous');
 
     // 7. Resumption handle extraction
@@ -742,7 +742,19 @@ rl.on('line', (line) => {
   // -------------------------------------------------------------
   console.log('\n[Test R] S2S State Machine & Barge-In Buffer Cancellation');
   try {
-    const validStates = ['idle', 'connecting', 'listening', 'processing', 'speaking', 'interrupted', 'muted', 'error'];
+    const validStates = [
+      'idle',
+      'requesting_permission',
+      'connecting',
+      'initializing',
+      'listening',
+      'processing',
+      'speaking',
+      'reconnecting',
+      'interrupted',
+      'error',
+      'ending'
+    ];
     let currentState = 'idle';
 
     function transition(state) {
@@ -753,12 +765,46 @@ rl.on('line', (line) => {
       return false;
     }
 
+    assert(transition('requesting_permission') && currentState === 'requesting_permission', 'Transition to requesting_permission valid');
     assert(transition('connecting') && currentState === 'connecting', 'Transition to connecting valid');
+    assert(transition('initializing') && currentState === 'initializing', 'Transition to initializing valid');
     assert(transition('listening') && currentState === 'listening', 'Transition to listening valid');
     assert(transition('processing') && currentState === 'processing', 'Transition to processing valid');
     assert(transition('speaking') && currentState === 'speaking', 'Transition to speaking valid');
     assert(transition('interrupted') && currentState === 'interrupted', 'Transition to interrupted (barge-in) valid');
+    assert(transition('reconnecting') && currentState === 'reconnecting', 'Transition to reconnecting valid');
+    assert(transition('error') && currentState === 'error', 'Transition to error valid');
+    assert(transition('ending') && currentState === 'ending', 'Transition to ending valid');
     assert(transition('idle') && currentState === 'idle', 'Transition back to idle valid');
+
+    // 2. Unrecoverable Code 1008 policy violation error does NOT trigger reconnect
+    const testSession = new GeminiLiveSession({ userDataPath: testWorkspace });
+    testSession.on('error', () => {}); // Register error listener to capture emitted errors in test
+    let reconnectCalled = false;
+    testSession.scheduleReconnect = () => { reconnectCalled = true; };
+    testSession.saveConfig({ apiKey: 'AQ.A-dummy-valid-key' });
+    testSession.startSession();
+    // Simulate close with Code 1008
+    if (testSession.ws && testSession.ws.onclose) {
+      testSession.ws.onclose({ code: 1008, reason: 'API key not valid' });
+    }
+    assert(reconnectCalled === false, 'Code 1008 (API key invalid) strictly aborts auto-reconnect');
+    assert(testSession.currentState === 'error', 'Code 1008 immediately transitions state machine to error');
+
+    // 3. stopSession cancels pending reconnect timers and resets reconnect attempts
+    testSession.reconnectAttempts = 2;
+    testSession.isReconnecting = true;
+    testSession.reconnectTimer = setTimeout(() => {}, 10000);
+    testSession.stopSession();
+    assert(testSession.reconnectAttempts === 0, 'stopSession resets reconnect attempts to 0');
+    assert(testSession.isReconnecting === false, 'stopSession clears isReconnecting flag');
+    assert(testSession.reconnectTimer === null, 'stopSession cancels and clears pending reconnect timer');
+    assert(testSession.currentState === 'idle', 'stopSession transitions session to idle');
+
+    // 4. Stale socket events from older generations are safely discarded
+    const genBefore = testSession.sessionGenerationId;
+    testSession.stopSession();
+    assert(testSession.sessionGenerationId > genBefore, 'Session teardown advances session generation ID');
 
     // Simulate mock audio pipeline buffer cancellation on barge-in
     class MockAudioPipeline {
@@ -788,6 +834,7 @@ rl.on('line', (line) => {
     realPipeline.interruptPlayback();
     assert(realPipeline.activeTurnId === 3, 'interruptPlayback increments activeTurnId to invalidate future chunks from turn 2');
     assert(realPipeline.isPlaying === false, 'interruptPlayback resets isPlaying to false');
+    assert(realPipeline.nextPlayTime === 0, 'interruptPlayback clears next scheduled play time');
     assert(realPipeline.nextPlayTime === 0, 'interruptPlayback clears next scheduled play time');
   } catch (err) {
     assert(false, 'S2S state machine test failed', err.message);

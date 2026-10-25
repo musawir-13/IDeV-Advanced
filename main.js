@@ -645,6 +645,7 @@ ipcMain.handle('memory:search', async (_event, payload) => {
 
 // --- Real-Time Speech-to-Speech (S2S) Handlers ---
 ipcMain.handle('s2s:get-status', async () => geminiLiveSession ? geminiLiveSession.getStatus() : { hasKey: false, engine: 'gemini-live' });
+ipcMain.handle('s2s:get-diagnostics', async () => geminiLiveSession ? geminiLiveSession.getDiagnostics() : []);
 ipcMain.handle('s2s:save-config', async (_event, config) => {
   if (!geminiLiveSession) throw new Error('S2S Session manager not initialized');
   return geminiLiveSession.saveConfig(config);
@@ -699,6 +700,7 @@ app.whenReady().then(async () => {
     projectRoot: app.getAppPath()
   });
 
+  geminiLiveSession.on('state-change', (data) => safeSend('s2s:state-change', data));
   geminiLiveSession.on('connecting', () => safeSend('s2s:state-change', { state: 'connecting' }));
   geminiLiveSession.on('connected', () => safeSend('s2s:state-change', { state: 'connected' }));
   geminiLiveSession.on('ready', (meta) => safeSend('s2s:ready', meta));
