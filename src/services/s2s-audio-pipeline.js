@@ -1,0 +1,303 @@
+/**
+ * IDeV Advanced — S2S Audio Pipeline & Processor
+ * 
+ * Provides:
+ * - 16kHz mono 16-bit linear PCM microphone capture & base64 framing
+ * - 24kHz mono 16-bit linear PCM streaming playback with gapless scheduling
+ * - Instant Barge-In (interruption) playback cancellation
+ * - Real-time audio energy (RMS) calculation & dynamic visualizer hooks
+ * - Float32 <-> Int16 PCM conversion utilities
+ */
+
+/**
+ * Convert Float32Array samples (-1.0 to +1.0) into 16-bit signed Linear PCM (ArrayBuffer).
+ * Handles clamping to prevent integer overflow clipping.
+ */
+function floatTo16BitPCM(float32Array) {
+  const buffer = new ArrayBuffer(float32Array.length * 2);
+  const view = new DataView(buffer);
+  for (let i = 0; i < float32Array.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32Array[i]));
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true); // true = little-endian
+  }
+  return buffer;
+}
+
+/**
+ * Convert 16-bit signed Linear PCM (ArrayBuffer or Uint8Array) into Float32Array.
+ */
+function pcm16BitToFloat(pcmData) {
+  const bytes = pcmData instanceof Uint8Array ? pcmData : new Uint8Array(pcmData);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const length = bytes.byteLength / 2;
+  const float32 = new Float32Array(length);
+  for (let i = 0; i < length; i++) {
+    const int16 = view.getInt16(i * 2, true);
+    float32[i] = int16 < 0 ? int16 / 0x8000 : int16 / 0x7FFF;
+  }
+  return float32;
+}
+
+/**
+ * Downsample audio buffer to target sample rate using linear interpolation.
+ */
+function downsampleBuffer(buffer, inputSampleRate, outputSampleRate) {
+  if (inputSampleRate === outputSampleRate) return buffer;
+  if (inputSampleRate < outputSampleRate) return buffer; // downsample only
+  const sampleRateRatio = inputSampleRate / outputSampleRate;
+  const newLength = Math.round(buffer.length / sampleRateRatio);
+  const result = new Float32Array(newLength);
+  let offsetResult = 0;
+  let offsetBuffer = 0;
+  while (offsetResult < result.length) {
+    const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+    let accum = 0;
+    let count = 0;
+    for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+      accum += buffer[i];
+      count++;
+    }
+    result[offsetResult] = count > 0 ? accum / count : 0;
+    offsetResult++;
+    offsetBuffer = nextOffsetBuffer;
+  }
+  return result;
+}
+
+/**
+ * Base64 encode an ArrayBuffer or Uint8Array.
+ */
+function arrayBufferToBase64(buffer) {
+  let binary = '';
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  if (typeof btoa === 'function') {
+    return btoa(binary);
+  }
+  return Buffer.from(binary, 'binary').toString('base64');
+}
+
+/**
+ * Base64 decode to Uint8Array.
+ */
+function base64ToUint8Array(base64) {
+  if (typeof atob === 'function') {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  }
+  return new Uint8Array(Buffer.from(base64, 'base64'));
+}
+
+/**
+ * Calculate Root Mean Square (RMS) energy and decibel volume.
+ */
+function calculateRMS(samples) {
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) {
+    sum += samples[i] * samples[i];
+  }
+  const rms = Math.sqrt(sum / (samples.length || 1));
+  const db = 20 * Math.log10(Math.max(rms, 0.00001));
+  return { rms, db };
+}
+
+/**
+ * Audio Pipeline Controller for IDeV S2S.
+ */
+class S2SAudioPipeline {
+  constructor(options = {}) {
+    this.onAudioChunk = options.onAudioChunk || (() => {});
+    this.onVolume = options.onVolume || (() => {});
+    this.onBargeIn = options.onBargeIn || (() => {});
+    this.vadThreshold = options.vadThreshold || 0.045; // RMS threshold for barge-in
+
+    this.audioContext = null;
+    this.playbackContext = null;
+    this.mediaStream = null;
+    this.sourceNode = null;
+    this.processorNode = null;
+
+    this.isPlaying = false;
+    this.activeSources = new Set();
+    this.nextPlayTime = 0;
+    this.isCapturing = false;
+  }
+
+  setVadSensitivity(level) {
+    if (level === 'high') this.vadThreshold = 0.025;
+    else if (level === 'low') this.vadThreshold = 0.075;
+    else this.vadThreshold = 0.045; // medium
+  }
+
+  async initCapture() {
+    if (this.isCapturing) return true;
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      this.audioContext = new AudioCtx({ sampleRate: 16000 });
+
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+
+      this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
+      // Using ScriptProcessorNode for universal compatibility with Electron Web Audio
+      this.processorNode = this.audioContext.createScriptProcessor(4096, 1, 1);
+
+      this.processorNode.onaudioprocess = (event) => {
+        if (!this.isCapturing) return;
+        const inputData = event.inputBuffer.getChannelData(0);
+        
+        // Downsample to 16kHz if audioContext sampleRate is different
+        const currentRate = this.audioContext.sampleRate;
+        const samples16k = currentRate !== 16000 ? downsampleBuffer(inputData, currentRate, 16000) : inputData;
+
+        // Energy & VAD
+        const { rms, db } = calculateRMS(samples16k);
+        this.onVolume({ rms, db });
+
+        // Barge-In Detection: User starts speaking while assistant audio is actively playing!
+        if (this.isPlaying && rms > this.vadThreshold) {
+          this.interruptPlayback();
+          this.onBargeIn({ reason: 'local_vad', rms });
+        }
+
+        // Convert to 16-bit Linear PCM
+        const pcmBuffer = floatTo16BitPCM(samples16k);
+        const base64Chunk = arrayBufferToBase64(pcmBuffer);
+        this.onAudioChunk(base64Chunk);
+      };
+
+      this.sourceNode.connect(this.processorNode);
+      this.processorNode.connect(this.audioContext.destination);
+      this.isCapturing = true;
+      return true;
+    } catch (err) {
+      console.error('[S2SAudioPipeline] initCapture error:', err);
+      throw err;
+    }
+  }
+
+  initPlayback() {
+    if (!this.playbackContext || this.playbackContext.state === 'closed') {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      this.playbackContext = new AudioCtx({ sampleRate: 24000 });
+      this.nextPlayTime = this.playbackContext.currentTime;
+    }
+    if (this.playbackContext.state === 'suspended') {
+      this.playbackContext.resume();
+    }
+  }
+
+  /**
+   * Queue and stream a 24kHz PCM chunk received from Gemini Live.
+   * @param {string} base64Pcm 
+   */
+  queueAudioChunk(base64Pcm) {
+    this.initPlayback();
+    if (!base64Pcm) return;
+
+    try {
+      const pcmBytes = base64ToUint8Array(base64Pcm);
+      const float32Data = pcm16BitToFloat(pcmBytes);
+
+      const buffer = this.playbackContext.createBuffer(1, float32Data.length, 24000);
+      buffer.copyToChannel(float32Data, 0, 0);
+
+      const source = this.playbackContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(this.playbackContext.destination);
+
+      const now = this.playbackContext.currentTime;
+      // Schedule slightly ahead to prevent audio stutter
+      const startTime = Math.max(now + 0.02, this.nextPlayTime);
+      source.start(startTime);
+      this.nextPlayTime = startTime + buffer.duration;
+      this.isPlaying = true;
+
+      this.activeSources.add(source);
+      source.onended = () => {
+        this.activeSources.delete(source);
+        if (this.activeSources.size === 0) {
+          this.isPlaying = false;
+        }
+      };
+    } catch (err) {
+      console.error('[S2SAudioPipeline] queueAudioChunk error:', err);
+    }
+  }
+
+  /**
+   * Instant Barge-In: immediately stop all scheduled output audio buffers.
+   */
+  interruptPlayback() {
+    for (const src of this.activeSources) {
+      try {
+        src.stop(0);
+        src.disconnect();
+      } catch (e) {
+        // ignore already stopped
+      }
+    }
+    this.activeSources.clear();
+    this.isPlaying = false;
+    if (this.playbackContext) {
+      this.nextPlayTime = this.playbackContext.currentTime;
+    }
+  }
+
+  stopCapture() {
+    this.isCapturing = false;
+    if (this.processorNode) {
+      try { this.processorNode.disconnect(); } catch {}
+      this.processorNode = null;
+    }
+    if (this.sourceNode) {
+      try { this.sourceNode.disconnect(); } catch {}
+      this.sourceNode = null;
+    }
+    if (this.mediaStream) {
+      try {
+        this.mediaStream.getTracks().forEach(t => t.stop());
+      } catch {}
+      this.mediaStream = null;
+    }
+    if (this.audioContext) {
+      try { this.audioContext.close(); } catch {}
+      this.audioContext = null;
+    }
+  }
+
+  cleanup() {
+    this.stopCapture();
+    this.interruptPlayback();
+    if (this.playbackContext) {
+      try { this.playbackContext.close(); } catch {}
+      this.playbackContext = null;
+    }
+  }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    S2SAudioPipeline,
+    floatTo16BitPCM,
+    pcm16BitToFloat,
+    downsampleBuffer,
+    arrayBufferToBase64,
+    base64ToUint8Array,
+    calculateRMS
+  };
+}

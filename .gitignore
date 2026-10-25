@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+jspm_packages/
+
+# Production builds
+release/
+dist/
+win-unpacked/
+*.blockmap
+builder-debug.yml
+
+# Checkpoints and temporary files
+.idev-checkpoints/
+_backup_pre_cleanup/
+*.log
+*.tmp
+*.bak
+
+# Environment and secrets
+.env
+.env.local
+.env.*
+!.env.example
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Code signing certificates and keys
+*.pfx
+*.p12
+*.pem
+*.key
+*.cer
+*.crt

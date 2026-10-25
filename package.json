@@ -1,0 +1,78 @@
+{
+  "name": "idev-local-ai",
+  "version": "0.3.8",
+  "description": "IDeV Advanced \u2014 local-first AI workspace with image attachments, local screen capture sharing, Ollama vision input, and full-team build orchestration.",
+  "main": "main.js",
+  "author": "Ubaid \u2014 IDeV",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "test": "node tests/run_all_tests.js",
+    "audit:buttons": "node scripts/audit_buttons.js",
+    "dist": "electron-builder --win nsis",
+    "dist:verify": "node scripts/verify_distribution.js",
+    "pack": "electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.idev.desktop",
+    "productName": "IDeV Advanced",
+    "copyright": "Copyright © 2026 IDeV. All rights reserved.",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "assets/**/*",
+      "package.json",
+      "README.md",
+      "!**/*.map",
+      "!**/*.pdb"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "legalTrademarks": "IDeV™",
+      "requestedExecutionLevel": "asInvoker",
+      "artifactName": "IDeV-Setup-${version}.${ext}",
+      "signtoolOptions": {
+        "publisherName": "IDeV",
+        "rfc3161TimeStampServer": "http://timestamp.digicert.com",
+        "signingHashAlgorithms": [
+          "sha256"
+        ]
+      }
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "packElevateHelper": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "IDeV Advanced",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "assets/installerIcon.ico",
+      "uninstallerIcon": "assets/uninstallerIcon.ico",
+      "installerHeader": "assets/installerHeader.bmp",
+      "installerHeaderIcon": "assets/installerIcon.ico",
+      "installerSidebar": "assets/installerSidebar.bmp",
+      "uninstallerSidebar": "assets/uninstallerSidebar.bmp",
+      "uninstallDisplayName": "IDeV Advanced ${version}"
+    }
+  }
+}
